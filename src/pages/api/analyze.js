@@ -11,83 +11,98 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
   }
 
+  const { ticker = 'GOOG', targetReturn = 1.0 } = req.body;
+  const cleanTicker = ticker.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
+  
+  if (!cleanTicker) {
+    return res.status(400).json({ error: 'Invalid ticker symbol' });
+  }
+
+  const barchartUrl = `https://www.barchart.com/stocks/quotes/${cleanTicker.toLowerCase()}/options`;
+
   const client = new Anthropic({ apiKey });
 
   try {
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4096,
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 3000,
       tools: [
         {
-          type: "web_search_20250305",
-          name: "web_search"
+          type: "web_fetch_20250305",
+          name: "web_fetch"
         }
       ],
       messages: [
         {
           role: "user",
-          content: `Search for current GOOG (Google/Alphabet) stock options data and provide analysis for selling cash-secured puts.
+          content: `Fetch and analyze options data from: ${barchartUrl}
 
-I need you to:
-1. Search for GOOG current stock price
-2. Search for GOOG weekly options chain data (puts) - look for the nearest expiration
-3. Find puts that are 5-10% out of the money
-4. Check if there are any upcoming earnings within the next week
+EXTRACT ALL DATA:
+1. Current ${cleanTicker} stock price and % change
+2. Options expiration date (nearest weekly)
+3. PUT options 5-15% OTM: strike, bid, ask, volume, open interest, IV%, delta
+4. Earnings date if shown
+5. 52-week high/low if available
 
-Calculate these metrics for each put:
-- OTM % = (Current Price - Strike) / Current Price × 100
-- Weekly Return % = (Mid Price / Strike) × 100
-- Mid Price = (Bid + Ask) / 2
+RISK ANALYSIS FLAGS:
+- Earnings within 7 days = HIGH RISK
+- IV > 50% = elevated volatility  
+- Open interest < 100 = liquidity risk
+- Bid-ask spread > 20% = poor execution
+- Days to expiry <= 3 = theta decay risk
 
-Return your response as a JSON object with this EXACT structure (output ONLY the JSON, no other text):
+USER TARGET: ${targetReturn}% weekly return
+
+RECOMMENDATION:
+Find the BEST put considering: meets ${targetReturn}% target + highest OTM% (safety) + good liquidity + no earnings risk
+
+Return ONLY this JSON:
 {
-  "ticker": "GOOG",
+  "ticker": "${cleanTicker}",
   "currentPrice": <number>,
-  "priceChange": "<string like -1.22% or +0.5%>",
-  "date": "<today's date as string>",
-  "expiration": "<nearest weekly expiration date>",
+  "priceChange": "<+/-X.XX%>",
+  "fiftyTwoWeekHigh": <number or null>,
+  "fiftyTwoWeekLow": <number or null>,
+  "expiration": "<date string>",
   "daysToExpiry": <number>,
-  "hasEarnings": <boolean - true if earnings within expiration period>,
-  "earningsInfo": "<earnings date and time if applicable, or null>",
-  "avgIV": <number - average implied volatility percentage>,
+  "hasEarnings": <true if earnings within 7 days>,
+  "earningsDate": "<date or null>",
+  "avgIV": <number>,
+  "ivRank": "<High/Medium/Low>",
+  "targetReturn": ${targetReturn},
   "recommendations": [
     {
-      "rank": <1, 2, or 3>,
+      "rank": 1,
       "strike": <number>,
       "bid": <number>,
       "ask": <number>,
-      "otmPercent": <number>,
-      "weeklyReturn": <number>,
+      "mid": <(bid+ask)/2>,
+      "otmPercent": <(price-strike)/price*100>,
+      "weeklyReturn": <(mid/strike)*100>,
+      "iv": <IV% or null>,
+      "delta": <delta or null>,
       "volume": <number>,
       "openInterest": <number>,
-      "meetsTarget": <boolean - true if weeklyReturn >= 1.0>
-    }
+      "spreadPercent": <(ask-bid)/mid*100>,
+      "meetsTarget": <weeklyReturn >= ${targetReturn}>
+    },
+    {"rank": 2, ...},
+    {"rank": 3, ...}
   ],
   "allPuts": [
-    {
-      "strike": <number>,
-      "bid": <number>,
-      "ask": <number>,
-      "otm": <number>,
-      "weeklyReturn": <number>,
-      "volume": <number>,
-      "oi": <number>
-    }
+    {"strike": <number>, "bid": <number>, "ask": <number>, "otm": <number>, "weeklyReturn": <number>, "iv": <number or null>, "delta": <number or null>, "volume": <number>, "oi": <number>}
   ],
-  "warnings": ["<array of risk warning strings>"],
-  "recommendation": "<overall recommendation string>"
+  "warnings": ["<specific risk warnings>"],
+  "analysisNotes": ["<observations about the options chain>"],
+  "recommendedStrike": <single best strike number>,
+  "recommendationReasoning": "<2-3 sentences explaining why this strike, considering target, safety, liquidity, risks>"
 }
 
-Selection criteria:
-- Only include puts where strike is 3-12% below current price
-- Rank by best risk/reward: prefer ~1%+ return with >5% OTM
-- Flag any puts near earnings as high risk
-- Top 3 recommendations should be the best balance of return vs safety`
+If earnings are imminent, strongly recommend AVOIDING puts until after.`
         }
       ]
     });
 
-    // Extract text from response
     let text = "";
     for (const block of message.content) {
       if (block.type === "text") {
@@ -95,28 +110,19 @@ Selection criteria:
       }
     }
 
-    // Try to parse JSON from the response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    let jsonStr = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         return res.status(200).json(parsed);
-      } catch (parseError) {
-        return res.status(200).json({ 
-          raw: text,
-          error: "Could not parse JSON from response" 
-        });
+      } catch (e) {
+        return res.status(200).json({ error: "JSON parse error: " + e.message, raw: text.substring(0, 500) });
       }
-    } else {
-      return res.status(200).json({ 
-        raw: text,
-        error: "No JSON found in response" 
-      });
     }
+    return res.status(200).json({ error: "No JSON found", raw: text.substring(0, 500) });
   } catch (error) {
-    console.error('Anthropic API error:', error);
-    return res.status(500).json({ 
-      error: error.message || 'Failed to analyze options' 
-    });
+    return res.status(500).json({ error: error.message });
   }
 }
