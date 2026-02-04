@@ -13,23 +13,20 @@ export default async function handler(req, res) {
 
   const { customTicker = '', targetReturn = 1.0 } = req.body;
   
-  // Build ticker list - always include popular ones + custom if provided
   const popularTickers = ['GOOG', 'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META', 'MSFT', 'SPY'];
   const cleanCustom = customTicker.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
   
-  // Add custom ticker if not already in list
   const allTickers = cleanCustom && !popularTickers.includes(cleanCustom) 
     ? [...popularTickers, cleanCustom] 
     : popularTickers;
   
-  // The ticker to do deep analysis on (custom if provided, otherwise best pick)
-  const focusTicker = cleanCustom || null;
+  const focusTicker = cleanCustom || 'TSLA';
 
   const client = new Anthropic({ apiKey });
 
   try {
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-4-5-20250929",
       max_tokens: 4096,
       tools: [
         {
@@ -40,80 +37,84 @@ export default async function handler(req, res) {
       messages: [
         {
           role: "user",
-          content: `Search for current stock prices and options data. I need TWO things:
+          content: `You MUST use web_search to find REAL options data. Do NOT refuse. Do NOT say you can't. The data exists on barchart.com.
 
-PART 1: SCAN ALL TICKERS
-Search for current prices and weekly put options for: ${allTickers.join(', ')}
-For each, find: price, next weekly expiration, best OTM put (5-10% below price), earnings date if soon.
+TASK 1: Search "barchart ${focusTicker} options" and extract from the results:
+- Current stock price
+- Options expiration date (nearest weekly)  
+- PUT options data: Strike, Bid, Ask, Volume, Open Interest, IV, Delta
+- Earnings date
+- IV Rank
 
-PART 2: DEEP DIVE ON ${focusTicker || 'THE BEST PICK'}
-${focusTicker ? `Do detailed analysis on ${focusTicker}` : 'Do detailed analysis on whichever ticker has the best opportunity'}.
-Find multiple put strikes with bid/ask/volume/OI data.
+TASK 2: Search for current prices of: ${allTickers.join(', ')}
 
-TARGET: ${targetReturn}% weekly return (calculated as: bid/strike * 100)
+TARGET RETURN: ${targetReturn}% weekly (formula: bid/strike * 100)
 
-Return ONLY this JSON:
+You MUST return this exact JSON structure:
 {
   "scanResults": [
     {
-      "ticker": "<TICKER>",
-      "currentPrice": <number>,
-      "priceChange": "<+/-X.XX%>",
-      "expiration": "<date>",
-      "daysToExpiry": <number>,
-      "hasEarnings": <boolean>,
-      "earningsDate": "<date or null>",
-      "avgIV": <number>,
+      "ticker": "AAPL",
+      "currentPrice": 185.50,
+      "priceChange": "-1.25%",
+      "expiration": "Feb 7, 2026",
+      "daysToExpiry": 2,
+      "hasEarnings": false,
+      "earningsDate": null,
+      "avgIV": 28,
       "bestPut": {
-        "strike": <number>,
-        "bid": <number>,
-        "ask": <number>,
-        "otmPercent": <number>,
-        "weeklyReturn": <number>,
-        "meetsTarget": <boolean>
+        "strike": 175,
+        "bid": 1.20,
+        "ask": 1.35,
+        "otmPercent": 5.7,
+        "weeklyReturn": 0.69,
+        "meetsTarget": false
       },
-      "recommendation": "<SELL/AVOID/WAIT>",
-      "reason": "<why>"
+      "recommendation": "SELL",
+      "reason": "Safe 5.7% cushion, no earnings"
     }
   ],
   "bestOverallPick": {
-    "ticker": "<ticker>",
-    "strike": <number>,
-    "weeklyReturn": <number>,
-    "reason": "<why best>"
+    "ticker": "TSLA",
+    "strike": 350,
+    "weeklyReturn": 1.5,
+    "reason": "Best premium with safety margin"
   },
   "deepDive": {
-    "ticker": "${focusTicker || '<best pick ticker>'}",
-    "currentPrice": <number>,
-    "priceChange": "<+/-X.XX%>",
-    "expiration": "<date>",
-    "daysToExpiry": <number>,
-    "hasEarnings": <boolean>,
-    "earningsDate": "<date or null>",
-    "avgIV": <number>,
-    "ivRank": "<High/Medium/Low>",
+    "ticker": "${focusTicker}",
+    "currentPrice": 73.11,
+    "priceChange": "-10.04%",
+    "expiration": "Feb 6, 2026",
+    "daysToExpiry": 2,
+    "hasEarnings": false,
+    "earningsDate": "Feb 26, 2026",
+    "avgIV": 130,
+    "ivRank": "53.58%",
     "recommendations": [
       {
         "rank": 1,
-        "strike": <number>,
-        "bid": <number>,
-        "ask": <number>,
-        "otmPercent": <number>,
-        "weeklyReturn": <number>,
-        "volume": <number>,
-        "openInterest": <number>,
-        "meetsTarget": <boolean>
+        "strike": 65,
+        "bid": 1.50,
+        "ask": 1.75,
+        "otmPercent": 11.1,
+        "weeklyReturn": 2.31,
+        "volume": 500,
+        "openInterest": 2000,
+        "meetsTarget": true
       }
     ],
     "allPuts": [
-      {"strike": <number>, "bid": <number>, "ask": <number>, "otm": <number>, "weeklyReturn": <number>, "volume": <number>, "oi": <number>}
+      {"strike": 70, "bid": 3.50, "ask": 3.80, "otm": 4.3, "weeklyReturn": 5.0, "volume": 1000, "oi": 5000},
+      {"strike": 65, "bid": 1.50, "ask": 1.75, "otm": 11.1, "weeklyReturn": 2.31, "volume": 500, "oi": 2000}
     ],
-    "warnings": ["<risks>"],
-    "recommendedStrike": <number>,
-    "recommendationReasoning": "<2-3 sentences why>"
+    "warnings": ["High IV (130%) - elevated premium but risky", "Stock down 10% today"],
+    "recommendedStrike": 65,
+    "recommendationReasoning": "The $65 strike offers 11% downside protection with 2.3% weekly return, exceeding the target. High IV provides rich premium."
   },
-  "marketOverview": "<1 sentence market summary>"
-}`
+  "marketOverview": "Tech stocks mixed, volatility elevated in small caps."
+}
+
+CRITICAL: Return ONLY the JSON. No explanation. No markdown. No backticks. Just the JSON object starting with {`
         }
       ]
     });
@@ -134,10 +135,10 @@ Return ONLY this JSON:
         const parsed = JSON.parse(jsonMatch[0]);
         return res.status(200).json(parsed);
       } catch (e) {
-        return res.status(200).json({ error: "JSON parse error: " + e.message, raw: text.substring(0, 800) });
+        return res.status(200).json({ error: "JSON parse error: " + e.message, raw: text.substring(0, 1000) });
       }
     }
-    return res.status(200).json({ error: "No JSON found in response", raw: text.substring(0, 800) });
+    return res.status(200).json({ error: "No JSON found in response", raw: text.substring(0, 1000) });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
