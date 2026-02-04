@@ -25,7 +25,7 @@ export default async function handler(req, res) {
 
   try {
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-4-5-20250929",
       max_tokens: 4096,
       tools: [
         {
@@ -49,7 +49,7 @@ Calculate these metrics for each put:
 - Weekly Return % = (Mid Price / Strike) × 100
 - Mid Price = (Bid + Ask) / 2
 
-Return your response as a JSON object with this EXACT structure (output ONLY the JSON, no other text):
+IMPORTANT: Return ONLY a JSON object with NO other text before or after. Use this exact structure:
 {
   "ticker": "${cleanTicker}",
   "currentPrice": <number>,
@@ -92,7 +92,9 @@ Selection criteria:
 - Only include puts where strike is 3-12% below current price
 - Rank by best risk/reward: prefer ~1%+ return with >5% OTM
 - Flag any puts near earnings as high risk
-- Top 3 recommendations should be the best balance of return vs safety`
+- Top 3 recommendations should be the best balance of return vs safety
+
+Output ONLY the JSON object, nothing else.`
         }
       ]
     });
@@ -106,21 +108,31 @@ Selection criteria:
     }
 
     // Try to parse JSON from the response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    // First, try to find JSON in the response (it might have markdown code blocks)
+    let jsonStr = text;
+    
+    // Remove markdown code blocks if present
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    }
+    
+    // Try to find a JSON object
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         return res.status(200).json(parsed);
       } catch (parseError) {
         return res.status(200).json({ 
-          raw: text,
-          error: "Could not parse JSON from response" 
+          error: "Could not parse JSON: " + parseError.message,
+          raw: text.substring(0, 500)
         });
       }
     } else {
       return res.status(200).json({ 
-        raw: text,
-        error: "No JSON found in response" 
+        error: "No JSON found in response",
+        raw: text.substring(0, 500)
       });
     }
   } catch (error) {
