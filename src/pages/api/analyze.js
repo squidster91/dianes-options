@@ -11,11 +11,21 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
   }
 
+  // Get ticker from request body, default to GOOG
+  const { ticker = 'GOOG' } = req.body;
+  
+  // Validate ticker (basic validation)
+  const cleanTicker = ticker.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
+  
+  if (!cleanTicker) {
+    return res.status(400).json({ error: 'Invalid ticker symbol' });
+  }
+
   const client = new Anthropic({ apiKey });
 
   try {
     const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 4096,
       tools: [
         {
@@ -26,11 +36,11 @@ export default async function handler(req, res) {
       messages: [
         {
           role: "user",
-          content: `Search for current GOOG (Google/Alphabet) stock options data and provide analysis for selling cash-secured puts.
+          content: `Search for current ${cleanTicker} stock options data and provide analysis for selling cash-secured puts.
 
 I need you to:
-1. Search for GOOG current stock price
-2. Search for GOOG weekly options chain data (puts) - look for the nearest expiration
+1. Search for ${cleanTicker} current stock price
+2. Search for ${cleanTicker} weekly options chain data (puts) - look for the nearest expiration
 3. Find puts that are 5-10% out of the money
 4. Check if there are any upcoming earnings within the next week
 
@@ -41,7 +51,7 @@ Calculate these metrics for each put:
 
 Return your response as a JSON object with this EXACT structure (output ONLY the JSON, no other text):
 {
-  "ticker": "GOOG",
+  "ticker": "${cleanTicker}",
   "currentPrice": <number>,
   "priceChange": "<string like -1.22% or +0.5%>",
   "date": "<today's date as string>",
