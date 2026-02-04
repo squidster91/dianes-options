@@ -2,19 +2,26 @@ import { useState } from 'react';
 import Head from 'next/head';
 
 export default function Home() {
+  const [ticker, setTicker] = useState('GOOG');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
   const analyzeOptions = async () => {
+    if (!ticker.trim()) {
+      setError('Please enter a ticker symbol');
+      return;
+    }
+    
     setLoading(true);
     setError(null);
     
     try {
       const response = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker.toUpperCase() })
       });
       
       const result = await response.json();
@@ -32,6 +39,12 @@ export default function Home() {
     }
   };
 
+  const handleKeyPress = (e) => {
+    if (e.key === 'Enter' && !loading) {
+      analyzeOptions();
+    }
+  };
+
   const getRankEmoji = (rank) => {
     if (rank === 1) return "🥇";
     if (rank === 2) return "🥈";
@@ -39,9 +52,11 @@ export default function Home() {
     return `#${rank}`;
   };
 
-  // Demo data for initial display
-  const demoData = {
-    ticker: "GOOG",
+  const popularTickers = ['GOOG', 'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META', 'MSFT', 'SPY'];
+
+  // Initial placeholder data
+  const placeholderData = {
+    ticker: ticker.toUpperCase() || "GOOG",
     currentPrice: 340.70,
     priceChange: "-1.22%",
     date: new Date().toLocaleDateString(),
@@ -62,18 +77,17 @@ export default function Home() {
       { strike: 320, bid: 2.10, ask: 2.20, otm: 6.1, weeklyReturn: 0.68, volume: 1500, oi: 5000 },
       { strike: 325, bid: 3.00, ask: 3.15, otm: 4.6, weeklyReturn: 0.95, volume: 2500, oi: 6000 }
     ],
-    warnings: ["📊 Demo data - Click 'Analyze Now' for live data"],
-    recommendation: "Click 'Analyze Now' to fetch real-time GOOG options data"
+    warnings: [],
+    recommendation: "Click 'Analyze' to fetch real-time options data"
   };
 
-  const displayData = data || demoData;
-  const isDemo = !data;
+  const displayData = data || placeholderData;
 
   return (
     <>
       <Head>
-        <title>GOOG Put Options Analyzer</title>
-        <meta name="description" content="Analyze GOOG weekly put options for cash-secured selling" />
+        <title>Put Options Analyzer</title>
+        <meta name="description" content="Analyze weekly put options for cash-secured selling" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.ico" />
       </Head>
@@ -82,56 +96,78 @@ export default function Home() {
         <div className="max-w-6xl mx-auto space-y-6">
           
           {/* Header */}
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <span className="text-4xl">📊</span>
-              <div>
-                <h1 className="text-2xl md:text-3xl font-bold text-white">{displayData.ticker} Put Scanner</h1>
-                <p className="text-slate-400 text-sm">
-                  {isDemo ? "Demo Data - Click Analyze for Live Data" : `Last updated: ${lastUpdated}`}
-                </p>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-4xl">📊</span>
+                <div>
+                  <h1 className="text-2xl md:text-3xl font-bold text-white">{displayData.ticker} Put Scanner</h1>
+                  <p className="text-slate-400 text-sm">
+                    {lastUpdated ? `Last updated: ${lastUpdated}` : "Enter a ticker to analyze"}
+                  </p>
+                </div>
               </div>
+              <button
+                onClick={analyzeOptions}
+                disabled={loading}
+                className={`px-6 py-3 font-semibold rounded-xl transition-all flex items-center gap-2 justify-center whitespace-nowrap ${
+                  loading 
+                    ? 'bg-slate-600 text-slate-400 cursor-wait' 
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/25'
+                }`}
+              >
+                {loading ? (
+                  <>
+                    <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    Analyze Now
+                  </>
+                )}
+              </button>
             </div>
-            <button
-              onClick={analyzeOptions}
-              disabled={loading}
-              className={`px-6 py-3 font-semibold rounded-xl transition-all flex items-center gap-2 justify-center ${
-                loading 
-                  ? 'bg-slate-600 text-slate-400 cursor-wait' 
-                  : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/25'
-              }`}
-            >
-              {loading ? (
-                <>
-                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Analyzing...
-                </>
-              ) : (
-                <>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Analyze Now
-                </>
-              )}
-            </button>
-          </div>
 
-          {/* Demo Banner */}
-          {isDemo && (
-            <div className="bg-blue-500/20 border border-blue-500/50 rounded-xl p-4 flex items-start gap-3">
-              <span className="text-2xl">ℹ️</span>
-              <div>
-                <h3 className="text-blue-400 font-bold">Demo Mode</h3>
-                <p className="text-blue-300/80 text-sm">
-                  Showing sample data. Click <strong>"Analyze Now"</strong> to fetch live GOOG options data using AI-powered web search.
-                </p>
+            {/* Ticker Input */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex-1 flex gap-2">
+                <input
+                  type="text"
+                  value={ticker}
+                  onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                  onKeyPress={handleKeyPress}
+                  placeholder="Enter ticker (e.g., AAPL)"
+                  className="flex-1 px-4 py-3 bg-slate-800 border border-slate-600 rounded-xl text-white text-lg font-medium placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  maxLength={5}
+                />
               </div>
             </div>
-          )}
+
+            {/* Quick Ticker Buttons */}
+            <div className="flex flex-wrap gap-2">
+              <span className="text-slate-500 text-sm py-1">Popular:</span>
+              {popularTickers.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTicker(t)}
+                  className={`px-3 py-1 text-sm rounded-lg transition-all ${
+                    ticker === t
+                      ? 'bg-emerald-500 text-white'
+                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Error Display */}
           {error && (
@@ -142,7 +178,7 @@ export default function Home() {
           )}
 
           {/* Warnings */}
-          {displayData.warnings && displayData.warnings.length > 0 && !isDemo && (
+          {displayData.warnings && displayData.warnings.length > 0 && (
             <div className="bg-amber-500/20 border border-amber-500/50 rounded-xl p-4">
               <h3 className="text-amber-400 font-bold mb-2">⚠️ Risk Warnings</h3>
               <ul className="space-y-1">
@@ -159,9 +195,13 @@ export default function Home() {
           )}
 
           {/* Market Summary */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
-              <div className="text-slate-400 text-xs uppercase tracking-wide mb-1">Current Price</div>
+              <div className="text-slate-400 text-xs uppercase tracking-wide mb-1">Ticker</div>
+              <div className="text-white text-2xl font-bold">{displayData.ticker}</div>
+            </div>
+            <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
+              <div className="text-slate-400 text-xs uppercase tracking-wide mb-1">Price</div>
               <div className="text-white text-2xl font-bold">${displayData.currentPrice?.toFixed(2)}</div>
               {displayData.priceChange && (
                 <div className={`text-sm ${displayData.priceChange?.startsWith('-') ? 'text-red-400' : 'text-emerald-400'}`}>
