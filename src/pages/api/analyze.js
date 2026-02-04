@@ -11,21 +11,11 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
   }
 
-  // Get ticker from request body, default to GOOG
-  const { ticker = 'GOOG' } = req.body;
-  
-  // Validate ticker (basic validation)
-  const cleanTicker = ticker.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
-  
-  if (!cleanTicker) {
-    return res.status(400).json({ error: 'Invalid ticker symbol' });
-  }
-
   const client = new Anthropic({ apiKey });
 
   try {
     const message = await client.messages.create({
-      model: "claude-sonnet-4-5-20250929",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 4096,
       tools: [
         {
@@ -36,11 +26,11 @@ export default async function handler(req, res) {
       messages: [
         {
           role: "user",
-          content: `Search for current ${cleanTicker} stock options data and provide analysis for selling cash-secured puts.
+          content: `Search for current GOOG (Google/Alphabet) stock options data and provide analysis for selling cash-secured puts.
 
 I need you to:
-1. Search for ${cleanTicker} current stock price
-2. Search for ${cleanTicker} weekly options chain data (puts) - look for the nearest expiration
+1. Search for GOOG current stock price
+2. Search for GOOG weekly options chain data (puts) - look for the nearest expiration
 3. Find puts that are 5-10% out of the money
 4. Check if there are any upcoming earnings within the next week
 
@@ -49,9 +39,9 @@ Calculate these metrics for each put:
 - Weekly Return % = (Mid Price / Strike) × 100
 - Mid Price = (Bid + Ask) / 2
 
-IMPORTANT: Return ONLY a JSON object with NO other text before or after. Use this exact structure:
+Return your response as a JSON object with this EXACT structure (output ONLY the JSON, no other text):
 {
-  "ticker": "${cleanTicker}",
+  "ticker": "GOOG",
   "currentPrice": <number>,
   "priceChange": "<string like -1.22% or +0.5%>",
   "date": "<today's date as string>",
@@ -92,9 +82,7 @@ Selection criteria:
 - Only include puts where strike is 3-12% below current price
 - Rank by best risk/reward: prefer ~1%+ return with >5% OTM
 - Flag any puts near earnings as high risk
-- Top 3 recommendations should be the best balance of return vs safety
-
-Output ONLY the JSON object, nothing else.`
+- Top 3 recommendations should be the best balance of return vs safety`
         }
       ]
     });
@@ -108,31 +96,21 @@ Output ONLY the JSON object, nothing else.`
     }
 
     // Try to parse JSON from the response
-    // First, try to find JSON in the response (it might have markdown code blocks)
-    let jsonStr = text;
-    
-    // Remove markdown code blocks if present
-    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlockMatch) {
-      jsonStr = codeBlockMatch[1].trim();
-    }
-    
-    // Try to find a JSON object
-    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         return res.status(200).json(parsed);
       } catch (parseError) {
         return res.status(200).json({ 
-          error: "Could not parse JSON: " + parseError.message,
-          raw: text.substring(0, 500)
+          raw: text,
+          error: "Could not parse JSON from response" 
         });
       }
     } else {
       return res.status(200).json({ 
-        error: "No JSON found in response",
-        raw: text.substring(0, 500)
+        raw: text,
+        error: "No JSON found in response" 
       });
     }
   } catch (error) {
