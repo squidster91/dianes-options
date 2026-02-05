@@ -1,5 +1,44 @@
 import Anthropic from '@anthropic-ai/sdk';
-import yahooFinance from 'yahoo-finance2';
+
+// Direct Yahoo Finance fetch (no npm package needed)
+async function fetchYahooQuote(ticker) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  });
+  if (!res.ok) throw new Error(`Quote fetch failed: ${res.status}`);
+  const data = await res.json();
+  const result = data.chart?.result?.[0];
+  if (!result) throw new Error('No quote data');
+  
+  const meta = result.meta;
+  return {
+    price: meta.regularMarketPrice,
+    previousClose: meta.previousClose,
+    change: ((meta.regularMarketPrice - meta.previousClose) / meta.previousClose * 100).toFixed(2),
+    high: meta.regularMarketDayHigh,
+    low: meta.regularMarketDayLow,
+    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
+    fiftyTwoWeekLow: meta.fiftyTwoWeekLow
+  };
+}
+
+async function fetchYahooOptions(ticker) {
+  const url = `https://query1.finance.yahoo.com/v7/finance/options/${ticker}`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  });
+  if (!res.ok) throw new Error(`Options fetch failed: ${res.status}`);
+  const data = await res.json();
+  const result = data.optionChain?.result?.[0];
+  if (!result) throw new Error('No options data');
+  
+  return {
+    expirationDates: result.expirationDates,
+    puts: result.options?.[0]?.puts || [],
+    quote: result.quote
+  };
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -27,35 +66,29 @@ export default async function handler(req, res) {
     const tickerData = await Promise.all(
       allTickers.map(async (ticker) => {
         try {
-          // Get quote data (includes price, change, 52-week range)
-          const quote = await yahooFinance.quote(ticker);
+          // Get options data (includes quote)
+          const options = await fetchYahooOptions(ticker);
+          const quote = options.quote;
           
-          // Get earnings and calendar data
+          const currentPrice = quote?.regularMarketPrice;
+          if (!currentPrice) throw new Error('No price data');
+          
+          // Get earnings date
+          const earningsTimestamp = quote?.earningsTimestamp;
           let earningsDate = null;
           let hasEarnings = false;
-          try {
-            const summary = await yahooFinance.quoteSummary(ticker, { modules: ['calendarEvents', 'defaultKeyStatistics'] });
-            const earnings = summary.calendarEvents?.earnings;
-            if (earnings?.earningsDate?.[0]) {
-              earningsDate = new Date(earnings.earningsDate[0]).toLocaleDateString();
-              // Check if earnings within 7 days
-              const daysToEarnings = Math.ceil((new Date(earnings.earningsDate[0]) - Date.now()) / (1000 * 60 * 60 * 24));
-              hasEarnings = daysToEarnings >= 0 && daysToEarnings <= 7;
-            }
-          } catch (e) {
-            // Earnings data not available for some tickers
+          if (earningsTimestamp) {
+            earningsDate = new Date(earningsTimestamp * 1000).toLocaleDateString();
+            const daysToEarnings = Math.ceil((earningsTimestamp * 1000 - Date.now()) / (1000 * 60 * 60 * 24));
+            hasEarnings = daysToEarnings >= 0 && daysToEarnings <= 7;
           }
           
-          // Get options chain
-          const options = await yahooFinance.options(ticker);
-          
-          // Get nearest expiration puts
-          const puts = options.options?.[0]?.puts || [];
+          // Get expiration info
           const expDate = options.expirationDates?.[0];
           const daysToExpiry = expDate ? Math.ceil((expDate * 1000 - Date.now()) / (1000 * 60 * 60 * 24)) : 0;
           
           // Filter OTM puts (3-20% below current price)
-          const currentPrice = quote.regularMarketPrice;
+          const puts = options.puts;
           const otmPuts = puts
             .filter(p => {
               const otmPct = ((currentPrice - p.strike) / currentPrice) * 100;
@@ -68,17 +101,13 @@ export default async function handler(req, res) {
               volume: p.volume || 0,
               openInterest: p.openInterest || 0,
               iv: p.impliedVolatility ? (p.impliedVolatility * 100).toFixed(1) : null,
-              delta: p.delta ? p.delta.toFixed(3) : null,
               otmPercent: (((currentPrice - p.strike) / currentPrice) * 100).toFixed(1),
               weeklyReturn: p.bid ? ((p.bid / p.strike) * 100).toFixed(2) : 0
             }))
             .sort((a, b) => parseFloat(b.weeklyReturn) - parseFloat(a.weeklyReturn))
             .slice(0, 10);
 
-          // Find best put that meets target
           const bestPut = otmPuts.find(p => parseFloat(p.weeklyReturn) >= targetReturn) || otmPuts[0];
-
-          // Calculate avg IV
           const avgIV = otmPuts.length > 0 
             ? (otmPuts.reduce((sum, p) => sum + parseFloat(p.iv || 0), 0) / otmPuts.length).toFixed(0) 
             : 0;
@@ -86,17 +115,14 @@ export default async function handler(req, res) {
           return {
             ticker,
             currentPrice,
-            priceChange: quote.regularMarketChangePercent?.toFixed(2) + '%',
-            fiftyTwoWeekHigh: quote.fiftyTwoWeekHigh,
-            fiftyTwoWeekLow: quote.fiftyTwoWeekLow,
+            priceChange: quote?.regularMarketChangePercent?.toFixed(2) + '%' || '0%',
+            fiftyTwoWeekHigh: quote?.fiftyTwoWeekHigh,
+            fiftyTwoWeekLow: quote?.fiftyTwoWeekLow,
             expiration: expDate ? new Date(expDate * 1000).toLocaleDateString() : 'N/A',
             daysToExpiry,
             earningsDate,
             hasEarnings,
             avgIV: parseFloat(avgIV),
-            marketCap: quote.marketCap,
-            dayHigh: quote.regularMarketDayHigh,
-            dayLow: quote.regularMarketDayLow,
             bestPut: bestPut ? {
               strike: bestPut.strike,
               bid: bestPut.bid,
@@ -111,6 +137,7 @@ export default async function handler(req, res) {
             error: null
           };
         } catch (e) {
+          console.error(`Error fetching ${ticker}:`, e.message);
           return {
             ticker,
             error: e.message,
@@ -123,7 +150,7 @@ export default async function handler(req, res) {
     );
 
     // Get detailed data for focus ticker
-    const focusData = tickerData.find(t => t.ticker === focusTicker) || tickerData[0];
+    const focusData = tickerData.find(t => t.ticker === focusTicker && !t.error) || tickerData.find(t => !t.error) || tickerData[0];
     
     // Find best overall pick (exclude those with imminent earnings)
     const validTickers = tickerData.filter(t => t.bestPut && !t.error && !t.hasEarnings);
@@ -132,65 +159,61 @@ export default async function handler(req, res) {
       .sort((a, b) => b.bestPut.otmPercent - a.bestPut.otmPercent)[0] 
       || validTickers.sort((a, b) => (b.bestPut?.weeklyReturn || 0) - (a.bestPut?.weeklyReturn || 0))[0];
 
-    // Use Haiku to analyze risks and provide recommendation
-    const client = new Anthropic({ apiKey });
-    
-    const analysisPrompt = `You are an options risk analyst. Analyze this data and identify ALL risks.
+    // Use Haiku to analyze risks (only if we have data)
+    let aiAnalysis = {};
+    if (focusData && !focusData.error) {
+      try {
+        const client = new Anthropic({ apiKey });
+        
+        const analysisPrompt = `You are an options risk analyst. Analyze this data briefly.
 
-FOCUS TICKER: ${focusData.ticker}
+TICKER: ${focusData.ticker}
 - Price: $${focusData.currentPrice} (${focusData.priceChange} today)
-- 52-Week Range: $${focusData.fiftyTwoWeekLow} - $${focusData.fiftyTwoWeekHigh}
-- Earnings Date: ${focusData.earningsDate || 'Not scheduled'}
-- Earnings Within 7 Days: ${focusData.hasEarnings ? 'YES - HIGH RISK' : 'No'}
-- Options Expiration: ${focusData.expiration} (${focusData.daysToExpiry} days)
-- Average IV: ${focusData.avgIV}%
+- 52-Week: $${focusData.fiftyTwoWeekLow} - $${focusData.fiftyTwoWeekHigh}
+- Earnings: ${focusData.earningsDate || 'Not scheduled'} ${focusData.hasEarnings ? '⚠️ WITHIN 7 DAYS' : ''}
+- Expiry: ${focusData.expiration} (${focusData.daysToExpiry} days)
+- Avg IV: ${focusData.avgIV}%
+- Target: ${targetReturn}%
 
-TOP PUTS AVAILABLE:
-${focusData.allPuts?.slice(0, 5).map(p => 
-  `Strike $${p.strike}: Bid $${p.bid}, Ask $${p.ask}, OTM ${p.otmPercent}%, Return ${p.weeklyReturn}%, IV ${p.iv || 'N/A'}%, Vol ${p.volume}, OI ${p.openInterest}`
-).join('\n') || 'No puts available'}
+TOP PUTS:
+${focusData.allPuts?.slice(0, 3).map(p => 
+  `$${p.strike}: Bid $${p.bid}, OTM ${p.otmPercent}%, Return ${p.weeklyReturn}%`
+).join('\n') || 'None'}
 
-USER'S TARGET: ${targetReturn}% weekly return
-
-RISK FACTORS TO CHECK:
-1. Earnings within 7 days of expiration = AVOID
-2. IV > 60% = elevated volatility, higher risk
-3. Stock down >5% today = momentum risk
-4. Stock near 52-week low = potential falling knife
-5. Low open interest (<100) = liquidity risk
-6. Wide bid-ask spread (>25%) = execution risk
-7. Days to expiry <=2 = theta decay, limited adjustment time
-
-Return ONLY this JSON:
+Return ONLY JSON:
 {
-  "recommendedStrike": <best strike number or null if should avoid>,
+  "recommendedStrike": <number or null>,
   "recommendation": "<SELL/WAIT/AVOID>",
-  "recommendationReasoning": "<2-3 sentences explaining the recommendation, mentioning specific data points>",
-  "warnings": ["<list each specific risk found>"],
-  "riskLevel": "<LOW/MEDIUM/HIGH/EXTREME>",
-  "keyFactors": ["<positive factors>"]
+  "recommendationReasoning": "<2 sentences>",
+  "warnings": ["<risks>"],
+  "riskLevel": "<LOW/MEDIUM/HIGH>",
+  "keyFactors": ["<positives>"]
 }`;
 
-    const analysis = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 600,
-      messages: [{ role: "user", content: analysisPrompt }]
-    });
+        const analysis = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 400,
+          messages: [{ role: "user", content: analysisPrompt }]
+        });
 
-    let aiAnalysis = {};
-    try {
-      const aiText = analysis.content[0]?.text || '';
-      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        aiAnalysis = JSON.parse(jsonMatch[0]);
+        const aiText = analysis.content[0]?.text || '';
+        const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          aiAnalysis = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        console.error('AI analysis error:', e.message);
       }
-    } catch (e) {
+    }
+
+    // Fallback analysis
+    if (!aiAnalysis.recommendation) {
       aiAnalysis = { 
-        recommendedStrike: focusData.hasEarnings ? null : focusData.allPuts?.[0]?.strike, 
-        recommendation: focusData.hasEarnings ? "AVOID" : "WAIT",
-        recommendationReasoning: focusData.hasEarnings ? "Earnings imminent - avoid selling puts until after announcement." : "Review the data and select based on your risk tolerance.", 
-        warnings: focusData.hasEarnings ? ["Earnings within 7 days"] : [], 
-        riskLevel: focusData.hasEarnings ? "EXTREME" : "MEDIUM",
+        recommendedStrike: focusData?.hasEarnings ? null : focusData?.allPuts?.[0]?.strike, 
+        recommendation: focusData?.hasEarnings ? "AVOID" : (focusData?.bestPut?.meetsTarget ? "SELL" : "WAIT"),
+        recommendationReasoning: focusData?.hasEarnings ? "Earnings imminent - high risk of gap." : "Review strikes based on your risk tolerance.", 
+        warnings: focusData?.hasEarnings ? ["Earnings within 7 days - avoid"] : [], 
+        riskLevel: focusData?.hasEarnings ? "HIGH" : "MEDIUM",
         keyFactors: []
       };
     }
@@ -207,16 +230,16 @@ Return ONLY this JSON:
         earningsDate: t.earningsDate,
         avgIV: t.avgIV || 0,
         bestPut: t.bestPut,
-        recommendation: t.hasEarnings ? "AVOID" : (t.bestPut?.meetsTarget ? "SELL" : "WAIT"),
-        reason: t.error ? t.error : (t.hasEarnings ? `⚠️ Earnings ${t.earningsDate}` : (t.bestPut?.meetsTarget ? `${t.bestPut.otmPercent.toFixed(1)}% cushion, meets target` : "Below target return"))
+        recommendation: t.error ? "ERROR" : (t.hasEarnings ? "AVOID" : (t.bestPut?.meetsTarget ? "SELL" : "WAIT")),
+        reason: t.error || (t.hasEarnings ? `⚠️ Earnings ${t.earningsDate}` : (t.bestPut?.meetsTarget ? `${t.bestPut.otmPercent.toFixed(1)}% cushion` : "Below target"))
       })),
       bestOverallPick: bestOverall ? {
         ticker: bestOverall.ticker,
         strike: bestOverall.bestPut?.strike,
         weeklyReturn: bestOverall.bestPut?.weeklyReturn,
-        reason: `Best risk/reward: ${bestOverall.bestPut?.otmPercent?.toFixed(1)}% OTM with ${bestOverall.bestPut?.weeklyReturn}% return, no earnings risk`
+        reason: `${bestOverall.bestPut?.otmPercent?.toFixed(1)}% OTM, ${bestOverall.bestPut?.weeklyReturn}% return`
       } : null,
-      deepDive: {
+      deepDive: focusData && !focusData.error ? {
         ticker: focusData.ticker,
         currentPrice: focusData.currentPrice,
         priceChange: focusData.priceChange,
@@ -254,14 +277,16 @@ Return ONLY this JSON:
         keyFactors: aiAnalysis.keyFactors || [],
         recommendedStrike: aiAnalysis.recommendedStrike,
         recommendation: aiAnalysis.recommendation || "WAIT",
-        recommendationReasoning: aiAnalysis.recommendationReasoning || "Review the data carefully."
-      },
-      marketOverview: `Scanned ${tickerData.filter(t => !t.error).length}/${allTickers.length} tickers. ${bestOverall ? `Best opportunity: ${bestOverall.ticker} $${bestOverall.bestPut?.strike} put (${bestOverall.bestPut?.weeklyReturn}% return).` : 'No strong picks meeting criteria.'}`
+        recommendationReasoning: aiAnalysis.recommendationReasoning || "Review the data."
+      } : null,
+      marketOverview: `Scanned ${tickerData.filter(t => !t.error).length}/${allTickers.length} tickers. ${bestOverall ? `Best: ${bestOverall.ticker} $${bestOverall.bestPut?.strike} put (${bestOverall.bestPut?.weeklyReturn}%).` : 'No picks found.'}`,
+      errors: tickerData.filter(t => t.error).map(t => `${t.ticker}: ${t.error}`)
     };
 
     return res.status(200).json(response);
 
   } catch (error) {
+    console.error('Handler error:', error);
     return res.status(500).json({ error: error.message });
   }
 }
