@@ -27,7 +27,7 @@ export default function Home() {
       const result = await response.json();
       
       if (result.error && !result.scanResults) {
-        setError(result.error + (result.raw ? ` - ${result.raw}` : ''));
+        setError(result.error);
       } else {
         setData(result);
         setLastScanned(new Date().toLocaleString());
@@ -39,9 +39,15 @@ export default function Home() {
     }
   };
 
-  const getRecommendationColor = (rec) => {
-    if (rec === 'SELL') return 'text-emerald-400';
-    if (rec === 'AVOID') return 'text-red-400';
+  const getRecommendationStyle = (rec) => {
+    if (rec === 'SELL') return 'bg-emerald-500/20 text-emerald-400';
+    if (rec === 'AVOID') return 'bg-red-500/20 text-red-400';
+    return 'bg-amber-500/20 text-amber-400';
+  };
+
+  const getRiskStyle = (risk) => {
+    if (risk === 'LOW') return 'text-emerald-400';
+    if (risk === 'HIGH') return 'text-red-400';
     return 'text-amber-400';
   };
 
@@ -65,7 +71,7 @@ export default function Home() {
           <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-6">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
               <div className="md:col-span-2">
-                <label className="text-slate-400 text-sm mb-2 block">Custom Ticker (optional - leave blank to scan all)</label>
+                <label className="text-slate-400 text-sm mb-2 block">Custom Ticker (optional)</label>
                 <input
                   type="text"
                   value={ticker}
@@ -117,8 +123,8 @@ export default function Home() {
           {loading && (
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-12 text-center">
               <div className="animate-spin w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-              <p className="text-white text-lg">Searching for options data...</p>
-              <p className="text-slate-400 text-sm">This may take 15-30 seconds</p>
+              <p className="text-white text-lg">Fetching live options data...</p>
+              <p className="text-slate-400 text-sm">This takes 5-10 seconds</p>
             </div>
           )}
 
@@ -141,7 +147,7 @@ export default function Home() {
                   </h3>
                   <p className="text-emerald-100">{data.bestOverallPick.reason}</p>
                   {data.bestOverallPick.weeklyReturn && (
-                    <p className="text-emerald-300 mt-2">Expected Return: {data.bestOverallPick.weeklyReturn.toFixed(2)}%</p>
+                    <p className="text-emerald-300 mt-2 text-lg">Expected Return: <span className="font-bold">{data.bestOverallPick.weeklyReturn}%</span></p>
                   )}
                 </div>
               )}
@@ -156,12 +162,15 @@ export default function Home() {
                         key={result.ticker}
                         className={`bg-slate-800/50 border rounded-xl p-4 ${
                           data.bestOverallPick?.ticker === result.ticker 
-                            ? 'border-emerald-500' : 'border-slate-700'
+                            ? 'border-emerald-500' 
+                            : result.hasEarnings 
+                              ? 'border-red-500/50' 
+                              : 'border-slate-700'
                         }`}
                       >
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-white font-bold">{result.ticker}</span>
-                          <span className={`text-xs px-2 py-1 rounded ${getRecommendationColor(result.recommendation)} bg-slate-700/50`}>
+                          <span className={`text-xs px-2 py-1 rounded ${getRecommendationStyle(result.recommendation)}`}>
                             {result.recommendation}
                           </span>
                         </div>
@@ -178,14 +187,14 @@ export default function Home() {
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-slate-400">Return</span>
-                                <span className={result.bestPut.meetsTarget ? 'text-emerald-400' : 'text-amber-400'}>
+                                <span className={result.bestPut.meetsTarget ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
                                   {result.bestPut.weeklyReturn?.toFixed(2)}%
                                 </span>
                               </div>
                             </>
                           )}
                           {result.hasEarnings && (
-                            <div className="text-red-400 text-xs">⚠️ Earnings soon</div>
+                            <div className="text-red-400 text-xs mt-2 font-medium">⚠️ Earnings: {result.earningsDate}</div>
                           )}
                         </div>
                       </div>
@@ -197,9 +206,23 @@ export default function Home() {
               {/* Deep Dive Section */}
               {data.deepDive && (
                 <div className="bg-slate-800/30 border border-slate-700 rounded-xl p-6">
-                  <h2 className="text-xl font-bold text-white mb-4">
-                    📊 Deep Dive: {data.deepDive.ticker}
-                  </h2>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-bold text-white">
+                      📊 Deep Dive: {data.deepDive.ticker}
+                    </h2>
+                    {data.deepDive.riskLevel && (
+                      <span className={`text-sm font-bold ${getRiskStyle(data.deepDive.riskLevel)}`}>
+                        Risk: {data.deepDive.riskLevel}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Verdict Banner */}
+                  {data.deepDive.overallVerdict && (
+                    <div className={`rounded-lg p-3 mb-4 ${getRecommendationStyle(data.deepDive.overallVerdict)}`}>
+                      <span className="font-bold text-lg">Verdict: {data.deepDive.overallVerdict}</span>
+                    </div>
+                  )}
 
                   {/* Recommendation */}
                   {data.deepDive.recommendedStrike && (
@@ -214,7 +237,7 @@ export default function Home() {
                   {/* Warnings */}
                   {data.deepDive.warnings?.length > 0 && (
                     <div className="bg-amber-500/10 border border-amber-500/50 rounded-xl p-4 mb-4">
-                      <h3 className="text-amber-400 font-bold mb-2">⚠️ Warnings</h3>
+                      <h3 className="text-amber-400 font-bold mb-2">⚠️ Risk Warnings</h3>
                       {data.deepDive.warnings.map((w, i) => (
                         <p key={i} className="text-amber-300 text-sm">• {w}</p>
                       ))}
@@ -222,24 +245,48 @@ export default function Home() {
                   )}
 
                   {/* Stats Grid */}
-                  <div className="grid grid-cols-4 gap-3 mb-4">
-                    <div className="bg-slate-800 rounded-lg p-3 text-center">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                    <div className="bg-slate-800 rounded-lg p-3">
                       <div className="text-slate-400 text-xs">Price</div>
                       <div className="text-white font-bold">${data.deepDive.currentPrice?.toFixed(2)}</div>
+                      <div className={`text-xs ${data.deepDive.priceChange?.includes('-') ? 'text-red-400' : 'text-emerald-400'}`}>
+                        {data.deepDive.priceChange}
+                      </div>
                     </div>
-                    <div className="bg-slate-800 rounded-lg p-3 text-center">
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="text-slate-400 text-xs">52-Week Range</div>
+                      <div className="text-white text-sm">
+                        ${data.deepDive.fiftyTwoWeekLow?.toFixed(0)} - ${data.deepDive.fiftyTwoWeekHigh?.toFixed(0)}
+                      </div>
+                    </div>
+                    <div className="bg-slate-800 rounded-lg p-3">
                       <div className="text-slate-400 text-xs">Expiry</div>
                       <div className="text-white font-bold">{data.deepDive.expiration}</div>
+                      <div className="text-slate-400 text-xs">{data.deepDive.daysToExpiry} days</div>
                     </div>
-                    <div className="bg-slate-800 rounded-lg p-3 text-center">
+                    <div className="bg-slate-800 rounded-lg p-3">
                       <div className="text-slate-400 text-xs">Avg IV</div>
-                      <div className="text-white font-bold">{data.deepDive.avgIV}%</div>
-                    </div>
-                    <div className="bg-slate-800 rounded-lg p-3 text-center">
-                      <div className="text-slate-400 text-xs">Earnings</div>
-                      <div className={`font-bold ${data.deepDive.hasEarnings ? 'text-red-400' : 'text-emerald-400'}`}>
-                        {data.deepDive.hasEarnings ? '⚠️ Soon' : '✓ Clear'}
+                      <div className={`font-bold ${data.deepDive.avgIV > 50 ? 'text-purple-400' : 'text-white'}`}>
+                        {data.deepDive.avgIV}%
                       </div>
+                      <div className="text-slate-400 text-xs">{data.deepDive.ivRank}</div>
+                    </div>
+                  </div>
+
+                  {/* Earnings & Dividend Row */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className={`rounded-lg p-3 ${data.deepDive.hasEarnings ? 'bg-red-500/20 border border-red-500/50' : 'bg-slate-800'}`}>
+                      <div className="text-slate-400 text-xs">Earnings Date</div>
+                      <div className={`font-bold ${data.deepDive.hasEarnings ? 'text-red-400' : 'text-white'}`}>
+                        {data.deepDive.earningsDate || 'Not scheduled'}
+                      </div>
+                      {data.deepDive.hasEarnings && (
+                        <div className="text-red-400 text-xs">⚠️ Before expiry!</div>
+                      )}
+                    </div>
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="text-slate-400 text-xs">Ex-Dividend</div>
+                      <div className="text-white font-bold">{data.deepDive.exDividendDate || 'N/A'}</div>
                     </div>
                   </div>
 
@@ -255,7 +302,7 @@ export default function Home() {
                             <div className="flex justify-between items-center mb-2">
                               <span className="text-white font-bold">${rec.strike} PUT</span>
                               <span className={`text-xs px-2 py-1 rounded ${rec.meetsTarget ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-300'}`}>
-                                {rec.meetsTarget ? `✓ ${targetReturn}%+` : 'Below target'}
+                                {rec.meetsTarget ? `✓ ${targetReturn}%+` : 'Below'}
                               </span>
                             </div>
                             <div className="text-sm space-y-1">
@@ -272,6 +319,10 @@ export default function Home() {
                                 <span className={rec.meetsTarget ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
                                   {rec.weeklyReturn?.toFixed(2)}%
                                 </span>
+                              </div>
+                              <div className="flex justify-between text-xs text-slate-500">
+                                <span>Vol: {rec.volume?.toLocaleString()}</span>
+                                <span>OI: {rec.openInterest?.toLocaleString()}</span>
                               </div>
                             </div>
                           </div>
@@ -293,6 +344,7 @@ export default function Home() {
                               <th className="text-right py-2 px-3">Ask</th>
                               <th className="text-right py-2 px-3">OTM%</th>
                               <th className="text-right py-2 px-3">Return</th>
+                              <th className="text-right py-2 px-3">IV</th>
                               <th className="text-right py-2 px-3">Vol</th>
                               <th className="text-right py-2 px-3">OI</th>
                             </tr>
@@ -311,6 +363,9 @@ export default function Home() {
                                 <td className="py-2 px-3 text-right text-slate-300">{put.otm?.toFixed(1)}%</td>
                                 <td className={`py-2 px-3 text-right font-medium ${put.weeklyReturn >= targetReturn ? 'text-emerald-400' : 'text-amber-400'}`}>
                                   {put.weeklyReturn?.toFixed(2)}%
+                                </td>
+                                <td className={`py-2 px-3 text-right ${put.iv > 50 ? 'text-purple-400' : 'text-slate-300'}`}>
+                                  {put.iv ? `${put.iv}%` : '-'}
                                 </td>
                                 <td className="py-2 px-3 text-right text-slate-300">{put.volume?.toLocaleString()}</td>
                                 <td className="py-2 px-3 text-right text-slate-300">{put.oi?.toLocaleString()}</td>
@@ -331,13 +386,13 @@ export default function Home() {
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-12 text-center">
               <p className="text-4xl mb-4">📈</p>
               <p className="text-white text-lg mb-2">Ready to scan</p>
-              <p className="text-slate-400">Click "Scan & Analyze" to find put opportunities across {popularTickers.length} stocks</p>
+              <p className="text-slate-400">Click "Scan & Analyze" to find put opportunities</p>
             </div>
           )}
 
           {/* Footer */}
           <div className="text-center text-slate-500 text-xs pt-4">
-            <p>Built by <span className="text-slate-400">Sid Mullick</span> • Powered by Claude AI</p>
+            <p>Built by <span className="text-slate-400">Sid Mullick</span> • Powered by Claude AI + Yahoo Finance</p>
             <p>⚠️ Not financial advice. Options trading involves significant risk.</p>
           </div>
         </div>
