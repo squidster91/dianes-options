@@ -88,7 +88,7 @@ Return ONLY this JSON:
     "reason": "<why this is the #1 pick today>"
   },
   "deepDive": {
-    "ticker": "${allTickers[0]}",
+    "ticker": "${cleanCustom || '<SAME AS bestOverallPick.ticker>'}",
     "currentPrice": <number>,
     "priceChange": "<+X.XX%>",
     "fiftyTwoWeekHigh": <number>,
@@ -114,7 +114,9 @@ Return ONLY this JSON:
   "errors": []
 }
 
-Pick the bestOverallPick as the one with: highest return that meets target + highest OTM% + no earnings risk.`
+Pick the bestOverallPick as the one with: highest return that meets target + highest OTM% + no earnings risk.
+
+IMPORTANT: The deepDive MUST be for ${cleanCustom ? `"${cleanCustom}" (the custom ticker the user entered)` : 'the SAME ticker as bestOverallPick'}.`
         }
       ]
     });
