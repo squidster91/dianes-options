@@ -136,6 +136,12 @@ export default function Home() {
                 <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
                   <p className="text-slate-300">🌍 {data.marketOverview}</p>
                   <p className="text-slate-500 text-xs mt-1">Scanned: {lastScanned}</p>
+                  {data.errors?.length > 0 && (
+                    <div className="mt-2 text-red-400 text-xs">
+                      <p className="font-bold">Errors:</p>
+                      {data.errors.slice(0, 3).map((err, i) => <p key={i}>• {err}</p>)}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -195,6 +201,9 @@ export default function Home() {
                           )}
                           {result.hasEarnings && (
                             <div className="text-red-400 text-xs mt-2 font-medium">⚠️ Earnings: {result.earningsDate}</div>
+                          )}
+                          {!result.currentPrice && result.reason && (
+                            <div className="text-red-400 text-xs mt-2">{result.reason}</div>
                           )}
                         </div>
                       </div>
