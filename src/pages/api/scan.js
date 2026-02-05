@@ -12,190 +12,299 @@ export default async function handler(req, res) {
 
   const { customTicker = '', targetReturn = 1.0 } = req.body;
   
-  const popularTickers = ['GOOG', 'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META', 'MSFT', 'SPY'];
+  const popularTickers = ['GOOG', 'AMZN', 'MSFT', 'AAPL'];
   const cleanCustom = customTicker.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5);
   
   const allTickers = cleanCustom && !popularTickers.includes(cleanCustom) 
     ? [...popularTickers, cleanCustom] 
     : popularTickers;
+  
+  const focusTicker = cleanCustom || 'AAPL';
 
   try {
     const client = new Anthropic({ apiKey });
     
-    // STEP 1: HAIKU + WEB SEARCH (cheap - processes large search results)
-    // Haiku extracts raw data, doesn't need to be smart about analysis
-    const searchPrompt = `Search for current stock data for these tickers: ${allTickers.join(', ')}
+    // Build Barchart URLs for each ticker
+    const barchartUrls = allTickers.map(t => 
+      `https://www.barchart.com/stocks/quotes/${t.toLowerCase()}/options`
+    ).join('\n');
 
-For each ticker, find and extract:
-1. Current stock price
-2. Today's price change (% up or down)
-3. Next earnings date (if within 30 days)
-4. Any weekly put option with strike 3-15% below current price (strike, bid price, expiration date)
+    console.log('Fetching Barchart data for:', allTickers.join(', '));
 
-Return ONLY a JSON array with the data you find. Example format:
+    // STEP 1: Use Sonnet with web_search to get data from specific Barchart URLs
+    const searchPrompt = `Search for and read options data from these SPECIFIC Barchart pages:
+
+${barchartUrls}
+
+For each ticker, search "site:barchart.com ${allTickers.join(' ')} options" or access the URLs directly.
+
+From each Barchart options page, extract:
+- Current stock price and % change
+- Next expiration date  
+- PUT options that are 3-20% out of the money (OTM)
+- For each put: strike price, bid, ask, volume, open interest, implied volatility
+
+Focus on puts with weekly return (bid/strike * 100) >= ${targetReturn}%.
+
+After reading all pages, return ONLY a JSON array:
 [
-  {"ticker":"AAPL","price":185.50,"change":"-1.2%","earnings":"Feb 15","puts":[{"strike":180,"bid":2.10,"expiry":"Feb 7"}]},
-  {"ticker":"GOOG","price":175.00,"change":"+0.5%","earnings":null,"puts":[{"strike":170,"bid":1.85,"expiry":"Feb 7"}]}
+  {
+    "ticker": "AAPL",
+    "currentPrice": 185.50,
+    "priceChange": "-1.2%",
+    "expiration": "2024-02-09",
+    "daysToExpiry": 5,
+    "puts": [
+      {"strike": 180, "bid": 1.25, "ask": 1.35, "volume": 500, "oi": 2000, "iv": 28.5, "otmPercent": 3.0, "weeklyReturn": 0.69}
+    ]
+  }
 ]
 
-If you can't find put option data for a ticker, set "puts" to empty array [].
-Include ALL tickers even if data is partial.`;
+CRITICAL: Output ONLY the JSON array. No markdown, no explanations.`;
 
     const searchResponse = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",  // HAIKU for the expensive search part
-      max_tokens: 2000,
-      tools: [{
-        type: "web_search_20250305",
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4000,
+      system: "You are a financial data extraction assistant. Use web search to access the specified Barchart.com options pages and extract options data. Output ONLY valid JSON with no other text.",
+      tools: [{ 
+        type: "web_search_20250305", 
         name: "web_search",
-        max_uses: 5
+        max_uses: 5  // 4 default tickers + 1 custom
       }],
-      messages: [{ role: "user", content: searchPrompt }]
+      messages: [
+        { role: "user", content: searchPrompt },
+        { role: "assistant", content: "[" }  // Prefill to force JSON array
+      ]
     });
+
+    console.log('Sonnet web_search response received, extracting data...');
 
     // Extract text from response
-    let rawData = '';
+    let rawText = "[";
     for (const block of searchResponse.content) {
       if (block.type === 'text') {
-        rawData += block.text;
+        rawText += block.text;
       }
     }
 
-    // Parse JSON from Haiku's response
+    // Clean up JSON - find the closing bracket
+    const endBracket = rawText.lastIndexOf(']');
+    if (endBracket > 0) {
+      rawText = rawText.substring(0, endBracket + 1);
+    }
+
+    // Parse ticker data
     let tickerData = [];
     try {
-      const jsonMatch = rawData.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        tickerData = JSON.parse(jsonMatch[0]);
-      }
+      tickerData = JSON.parse(rawText);
+      console.log(`Parsed ${tickerData.length} tickers from Barchart`);
     } catch (e) {
       console.error('JSON parse error:', e.message);
-      console.error('Raw data:', rawData.substring(0, 500));
-    }
-
-    // If no data, return early
-    if (tickerData.length === 0) {
-      return res.status(200).json({
-        scanResults: allTickers.map(t => ({ 
-          ticker: t, 
-          error: 'Failed to fetch data',
-          recommendation: 'ERROR'
-        })),
-        marketOverview: 'Data fetch failed. Try again.',
-        errors: ['Could not parse market data from search results']
-      });
-    }
-
-    // STEP 2: SONNET FOR ANALYSIS (smart - small input, quality matters)
-    // Now Sonnet only processes ~1000 tokens, not 50,000
-    const analysisPrompt = `You are an expert options trader analyzing cash-secured put opportunities.
-
-TARGET: ${targetReturn}% weekly return
-
-MARKET DATA:
-${JSON.stringify(tickerData, null, 2)}
-
-For each ticker, analyze:
-1. Is there a put meeting the ${targetReturn}% weekly return target? (calculate: bid/strike * 100)
-2. Risk level (LOW/MEDIUM/HIGH/EXTREME):
-   - Earnings within 7 days = EXTREME risk
-   - Price down >3% today = HIGH risk
-   - OTM cushion <5% = MEDIUM risk
-   - Otherwise = LOW risk
-3. Recommendation: SELL (good opportunity) / WAIT (below target) / AVOID (too risky)
-
-Return JSON only:
-{
-  "analysis": [
-    {
-      "ticker": "AAPL",
-      "price": 185.50,
-      "bestPut": {"strike": 180, "bid": 2.10, "expiry": "Feb 7", "otmPercent": 3.0, "weeklyReturn": 1.17},
-      "risk": "LOW",
-      "recommendation": "SELL",
-      "reasoning": "1.17% return with 3% cushion, no earnings soon"
-    }
-  ],
-  "bestOverallPick": {
-    "ticker": "AAPL",
-    "strike": 180,
-    "reason": "Best risk-adjusted return"
-  },
-  "marketSummary": "Brief 1-sentence market overview"
-}`;
-
-    const analysisResponse = await client.messages.create({
-      model: "claude-sonnet-4-20250514",  // SONNET for smart analysis (small input)
-      max_tokens: 1500,
-      messages: [{ role: "user", content: analysisPrompt }]
-    });
-
-    // Parse Sonnet's analysis
-    let analysis = null;
-    try {
-      const analysisText = analysisResponse.content[0]?.text || '';
-      const analysisMatch = analysisText.match(/\{[\s\S]*\}/);
-      if (analysisMatch) {
-        analysis = JSON.parse(analysisMatch[0]);
+      console.log('Raw text (first 500 chars):', rawText.substring(0, 500));
+      
+      // Fallback: try to extract JSON array with regex
+      const jsonMatch = rawText.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+      if (jsonMatch) {
+        try {
+          tickerData = JSON.parse(jsonMatch[0]);
+          console.log(`Fallback parsed ${tickerData.length} tickers`);
+        } catch (e2) {
+          console.error('Fallback parse also failed');
+        }
       }
-    } catch (e) {
-      console.error('Analysis parse error:', e.message);
     }
 
-    // Build final response
-    if (analysis && analysis.analysis) {
-      const scanResults = analysis.analysis.map(a => ({
-        ticker: a.ticker,
-        currentPrice: a.price,
-        priceChange: tickerData.find(t => t.ticker === a.ticker)?.change || 'N/A',
-        earningsDate: tickerData.find(t => t.ticker === a.ticker)?.earnings || null,
-        hasEarnings: !!tickerData.find(t => t.ticker === a.ticker)?.earnings,
-        bestPut: a.bestPut ? {
-          strike: a.bestPut.strike,
-          bid: a.bestPut.bid,
-          expiry: a.bestPut.expiry,
-          otmPercent: a.bestPut.otmPercent,
-          weeklyReturn: a.bestPut.weeklyReturn,
-          meetsTarget: a.bestPut.weeklyReturn >= targetReturn
-        } : null,
-        recommendation: a.recommendation,
-        riskLevel: a.risk,
-        reason: a.reasoning
-      }));
-
-      return res.status(200).json({
-        scanResults,
-        bestOverallPick: analysis.bestOverallPick,
-        deepDive: scanResults.find(s => s.ticker === (cleanCustom || 'TSLA')) || scanResults[0],
-        marketOverview: analysis.marketSummary || `Scanned ${scanResults.length} tickers.`,
-        errors: []
+    // If we still have no data, return error
+    if (!tickerData || tickerData.length === 0) {
+      return res.status(500).json({ 
+        error: 'Could not fetch options data from Barchart',
+        scanResults: [],
+        bestOverallPick: null,
+        deepDive: null,
+        marketOverview: 'Failed to fetch data',
+        errors: ['No data returned from Barchart pages']
       });
     }
 
-    // Fallback if analysis failed
-    return res.status(200).json({
-      scanResults: tickerData.map(t => ({
+    // Process ticker data
+    const processedTickers = tickerData.map(t => {
+      const puts = t.puts || [];
+      const bestPut = puts.find(p => p.weeklyReturn >= targetReturn) || puts[0];
+      const avgIV = puts.length > 0 
+        ? puts.reduce((sum, p) => sum + (p.iv || 0), 0) / puts.length 
+        : 0;
+      
+      return {
         ticker: t.ticker,
-        currentPrice: t.price,
-        priceChange: t.change,
-        earningsDate: t.earnings,
-        hasEarnings: !!t.earnings,
-        bestPut: t.puts?.[0] ? {
-          strike: t.puts[0].strike,
-          bid: t.puts[0].bid,
-          expiry: t.puts[0].expiry,
-          weeklyReturn: t.puts[0].bid && t.puts[0].strike ? 
-            ((t.puts[0].bid / t.puts[0].strike) * 100).toFixed(2) : null
+        currentPrice: t.currentPrice,
+        priceChange: t.priceChange,
+        expiration: t.expiration,
+        daysToExpiry: t.daysToExpiry || 7,
+        hasEarnings: false, // Barchart page may not have this
+        earningsDate: null,
+        avgIV: Math.round(avgIV),
+        bestPut: bestPut ? {
+          strike: bestPut.strike,
+          bid: bestPut.bid,
+          ask: bestPut.ask,
+          otmPercent: bestPut.otmPercent,
+          weeklyReturn: bestPut.weeklyReturn,
+          volume: bestPut.volume,
+          openInterest: bestPut.oi || bestPut.openInterest,
+          meetsTarget: bestPut.weeklyReturn >= targetReturn
         } : null,
-        recommendation: 'WAIT',
-        riskLevel: 'MEDIUM',
-        reason: 'Analysis pending'
-      })),
-      marketOverview: `Fetched data for ${tickerData.length} tickers.`,
-      errors: ['Analysis parsing failed - showing raw data']
+        allPuts: puts,
+        error: null
+      };
     });
+
+    // Find focus ticker and best overall
+    const focusData = processedTickers.find(t => t.ticker === focusTicker) 
+      || processedTickers.find(t => t.bestPut) 
+      || processedTickers[0];
+    
+    const validTickers = processedTickers.filter(t => t.bestPut);
+    const bestOverall = validTickers
+      .filter(t => t.bestPut?.meetsTarget)
+      .sort((a, b) => b.bestPut.otmPercent - a.bestPut.otmPercent)[0]
+      || validTickers.sort((a, b) => (b.bestPut?.weeklyReturn || 0) - (a.bestPut?.weeklyReturn || 0))[0];
+
+    // STEP 2: Use Haiku for risk analysis (cheap!)
+    let aiAnalysis = {};
+    if (focusData && focusData.allPuts?.length > 0) {
+      try {
+        console.log('Starting Haiku analysis...');
+        
+        const analysisPrompt = `Analyze this options data briefly.
+
+TICKER: ${focusData.ticker}
+Price: $${focusData.currentPrice} (${focusData.priceChange})
+Expiry: ${focusData.expiration} (${focusData.daysToExpiry} days)
+IV: ${focusData.avgIV}%
+Target: ${targetReturn}%
+
+TOP PUTS:
+${focusData.allPuts.slice(0, 3).map(p => 
+  `$${p.strike}: Bid $${p.bid}, OTM ${p.otmPercent}%, Return ${p.weeklyReturn}%`
+).join('\n')}
+
+Return ONLY JSON:
+{"recommendedStrike": <number or null>, "recommendation": "<SELL/WAIT/AVOID>", "recommendationReasoning": "<2 sentences>", "warnings": ["<risks>"], "riskLevel": "<LOW/MEDIUM/HIGH>", "keyFactors": ["<positives>"]}`;
+
+        const analysis = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 400,
+          system: "Output ONLY valid JSON. No explanations.",
+          messages: [
+            { role: "user", content: analysisPrompt },
+            { role: "assistant", content: "{" }
+          ]
+        });
+
+        let aiText = "{" + (analysis.content[0]?.text || '');
+        const jsonEnd = aiText.lastIndexOf('}');
+        if (jsonEnd > 0) aiText = aiText.substring(0, jsonEnd + 1);
+        
+        aiAnalysis = JSON.parse(aiText);
+        console.log('Haiku analysis complete');
+      } catch (e) {
+        console.error('Haiku analysis error:', e.message);
+      }
+    }
+
+    // Fallback analysis
+    if (!aiAnalysis.recommendation) {
+      aiAnalysis = {
+        recommendedStrike: focusData?.allPuts?.[0]?.strike,
+        recommendation: focusData?.bestPut?.meetsTarget ? "SELL" : "WAIT",
+        recommendationReasoning: focusData?.bestPut?.meetsTarget 
+          ? "Target return met with reasonable cushion." 
+          : "Below target return - consider waiting for better premium.",
+        warnings: [],
+        riskLevel: "MEDIUM",
+        keyFactors: []
+      };
+    }
+
+    // Build response
+    const response = {
+      scanResults: processedTickers.map(t => ({
+        ticker: t.ticker,
+        currentPrice: t.currentPrice,
+        priceChange: t.priceChange,
+        expiration: t.expiration,
+        daysToExpiry: t.daysToExpiry,
+        hasEarnings: t.hasEarnings,
+        earningsDate: t.earningsDate,
+        avgIV: t.avgIV,
+        bestPut: t.bestPut,
+        recommendation: t.error ? "ERROR" : (t.bestPut?.meetsTarget ? "SELL" : "WAIT"),
+        riskLevel: t.avgIV > 50 ? "HIGH" : (t.avgIV > 30 ? "MEDIUM" : "LOW"),
+        reason: t.error || (t.bestPut?.meetsTarget 
+          ? `${t.bestPut.otmPercent.toFixed(1)}% cushion` 
+          : "Below target")
+      })),
+      bestOverallPick: bestOverall ? {
+        ticker: bestOverall.ticker,
+        strike: bestOverall.bestPut?.strike,
+        weeklyReturn: bestOverall.bestPut?.weeklyReturn,
+        reason: `${bestOverall.bestPut?.otmPercent?.toFixed(1)}% OTM, ${bestOverall.bestPut?.weeklyReturn}% return`
+      } : null,
+      deepDive: focusData ? {
+        ticker: focusData.ticker,
+        currentPrice: focusData.currentPrice,
+        priceChange: focusData.priceChange,
+        fiftyTwoWeekHigh: null,
+        fiftyTwoWeekLow: null,
+        expiration: focusData.expiration,
+        daysToExpiry: focusData.daysToExpiry,
+        hasEarnings: focusData.hasEarnings,
+        earningsDate: focusData.earningsDate,
+        avgIV: focusData.avgIV,
+        riskLevel: aiAnalysis.riskLevel || "MEDIUM",
+        recommendations: focusData.allPuts?.slice(0, 3).map((p, i) => ({
+          rank: i + 1,
+          strike: p.strike,
+          bid: p.bid,
+          ask: p.ask,
+          otmPercent: p.otmPercent,
+          weeklyReturn: p.weeklyReturn,
+          volume: p.volume,
+          openInterest: p.oi || p.openInterest,
+          iv: p.iv,
+          meetsTarget: p.weeklyReturn >= targetReturn
+        })) || [],
+        allPuts: focusData.allPuts?.map(p => ({
+          strike: p.strike,
+          bid: p.bid,
+          ask: p.ask,
+          otm: p.otmPercent,
+          weeklyReturn: p.weeklyReturn,
+          iv: p.iv,
+          volume: p.volume,
+          oi: p.oi || p.openInterest
+        })) || [],
+        warnings: aiAnalysis.warnings || [],
+        keyFactors: aiAnalysis.keyFactors || [],
+        recommendedStrike: aiAnalysis.recommendedStrike,
+        recommendation: aiAnalysis.recommendation || "WAIT",
+        recommendationReasoning: aiAnalysis.recommendationReasoning || "Review the data."
+      } : null,
+      marketOverview: `Scanned ${processedTickers.length}/${allTickers.length} tickers via Barchart. ${bestOverall ? `Best: ${bestOverall.ticker} $${bestOverall.bestPut?.strike} put (${bestOverall.bestPut?.weeklyReturn}%).` : 'No picks meeting target.'}`,
+      errors: processedTickers.filter(t => t.error).map(t => `${t.ticker}: ${t.error}`)
+    };
+
+    return res.status(200).json(response);
 
   } catch (error) {
     console.error('Handler error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ 
+      error: error.message,
+      scanResults: [],
+      bestOverallPick: null,
+      deepDive: null,
+      marketOverview: 'Error occurred',
+      errors: [error.message]
+    });
   }
 }
