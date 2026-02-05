@@ -10,22 +10,22 @@ export default function Home() {
   const [lastScanned, setLastScanned] = useState(null);
 
   const targetReturnOptions = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
-  const popularTickers = ['GOOG', 'AAPL', 'TSLA', 'NVDA', 'AMZN', 'META', 'MSFT', 'SPY'];
+  const popularTickers = ['GOOG', 'AMZN', 'MSFT', 'AAPL'];
 
   const runScan = async () => {
     setLoading(true);
     setError(null);
     setData(null);
-    
+
     try {
       const response = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ customTicker: ticker, targetReturn })
       });
-      
+
       const result = await response.json();
-      
+
       if (result.error && !result.scanResults) {
         setError(result.error);
       } else {
@@ -60,7 +60,7 @@ export default function Home() {
 
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-4 md:p-6">
         <div className="max-w-6xl mx-auto space-y-6">
-          
+
           {/* Header */}
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-white mb-2">📊 Stock Put Scanner</h1>
@@ -98,8 +98,8 @@ export default function Home() {
                 onClick={runScan}
                 disabled={loading}
                 className={`px-6 py-3 font-bold rounded-xl transition-all ${
-                  loading 
-                    ? 'bg-slate-600 text-slate-400 cursor-wait' 
+                  loading
+                    ? 'bg-slate-600 text-slate-400 cursor-wait'
                     : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg'
                 }`}
               >
@@ -124,7 +124,7 @@ export default function Home() {
             <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-12 text-center">
               <div className="animate-spin w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full mx-auto mb-4"></div>
               <p className="text-white text-lg">Fetching live options data...</p>
-              <p className="text-slate-400 text-sm">This takes 5-10 seconds</p>
+              <p className="text-slate-400 text-sm">This takes 10-20 seconds</p>
             </div>
           )}
 
@@ -164,14 +164,14 @@ export default function Home() {
                   <h2 className="text-xl font-bold text-white mb-4">All Tickers</h2>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                     {data.scanResults.map((result) => (
-                      <div 
+                      <div
                         key={result.ticker}
                         className={`bg-slate-800/50 border rounded-xl p-4 ${
-                          data.bestOverallPick?.ticker === result.ticker 
-                            ? 'border-emerald-500' 
-                            : result.hasEarnings 
-                              ? 'border-red-500/50' 
-                              : 'border-slate-700'
+                          data.bestOverallPick?.ticker === result.ticker
+                            ? 'border-emerald-500'
+                            : result.hasEarnings
+                            ? 'border-red-500/50'
+                            : 'border-slate-700'
                         }`}
                       >
                         <div className="flex justify-between items-center mb-2">
@@ -265,7 +265,7 @@ export default function Home() {
                     <div className="bg-slate-800 rounded-lg p-3">
                       <div className="text-slate-400 text-xs">52-Week Range</div>
                       <div className="text-white text-sm">
-                        ${data.deepDive.fiftyTwoWeekLow?.toFixed(0)} - ${data.deepDive.fiftyTwoWeekHigh?.toFixed(0)}
+                        ${data.deepDive.fiftyTwoWeekLow?.toFixed(0) || '—'} - ${data.deepDive.fiftyTwoWeekHigh?.toFixed(0) || '—'}
                       </div>
                     </div>
                     <div className="bg-slate-800 rounded-lg p-3">
@@ -305,9 +305,12 @@ export default function Home() {
                       <h3 className="text-white font-bold mb-3">Top 3 Strikes</h3>
                       <div className="grid md:grid-cols-3 gap-3">
                         {data.deepDive.recommendations.slice(0, 3).map((rec, i) => (
-                          <div key={i} className={`bg-slate-800 rounded-lg p-4 ${
-                            rec.strike === data.deepDive.recommendedStrike ? 'ring-2 ring-emerald-500' : ''
-                          }`}>
+                          <div
+                            key={i}
+                            className={`bg-slate-800 rounded-lg p-4 ${
+                              rec.strike === data.deepDive.recommendedStrike ? 'ring-2 ring-emerald-500' : ''
+                            }`}
+                          >
                             <div className="flex justify-between items-center mb-2">
                               <span className="text-white font-bold">${rec.strike} PUT</span>
                               <span className={`text-xs px-2 py-1 rounded ${rec.meetsTarget ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-300'}`}>
@@ -360,9 +363,12 @@ export default function Home() {
                           </thead>
                           <tbody>
                             {data.deepDive.allPuts.map((put, i) => (
-                              <tr key={i} className={`border-b border-slate-800 ${
-                                put.strike === data.deepDive.recommendedStrike ? 'bg-emerald-500/10' : ''
-                              }`}>
+                              <tr
+                                key={i}
+                                className={`border-b border-slate-800 ${
+                                  put.strike === data.deepDive.recommendedStrike ? 'bg-emerald-500/10' : ''
+                                }`}
+                              >
                                 <td className="py-2 px-3 text-white font-medium">
                                   ${put.strike}
                                   {put.strike === data.deepDive.recommendedStrike && <span className="text-emerald-400 ml-1">★</span>}
@@ -401,9 +407,10 @@ export default function Home() {
 
           {/* Footer */}
           <div className="text-center text-slate-500 text-xs pt-4">
-            <p>Built by <span className="text-slate-400">Sid Mullick</span> • Powered by Claude AI + Yahoo Finance</p>
+            <p>Built by <span className="text-slate-400">Sid Mullick</span> • Powered by Claude AI + Barchart</p>
             <p>⚠️ Not financial advice. Options trading involves significant risk.</p>
           </div>
+
         </div>
       </div>
     </>
